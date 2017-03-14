@@ -118,6 +118,15 @@ class DecisionTreeNode:
     def addChild(self, child):
         self.childNodes.append(child)
 
+    def removeChildren(self):
+        self.childNodes = []
+
+    #turns parent node into a leaf node
+    def pruneNode(self):
+        if self.parentNode != None:
+            self.parentNode.removeChildren()
+            self.parentNode.setLeafValue(pluralityCategory(self.parent_examples))
+
     def getLeafValue(self):
         return self.leafValue
 
@@ -129,6 +138,9 @@ class DecisionTreeNode:
 
     def getfeatureValue(self):
         return self.feature_value
+
+    def getExamples(self):
+        return self.examples
 
     #recursively splits up the data based on the feature with the most information gain
     def decisionTreeLearn(self):
@@ -144,6 +156,11 @@ class DecisionTreeNode:
             return self.leafValue
         else:
             to_split = leastConditionalEntropy(self.examples, self.features, self.categories)
+            cond_ent = conditionalEntropy(self.examples, to_split, self.categories)
+            ent = entropy(self.examples, self.categories)
+            info_gain = ent - cond_ent
+            #print info_gain
+
             #create copy of features without the split feature
             new_features = list(self.features)
             new_features.remove(to_split)
@@ -162,13 +179,26 @@ class DecisionTreeNode:
                 self.addChild(new_node)
 
 
+    #if leaf:
+    #measure info gain from splitting at parent
+    #prune if below threshold, recursively call on parent
+    #else:
+    #recursively call on child
     def pruneTree(self):
-        #if leaf:
-        #measure info gain from splitting at parent
-        #prune if below threshold, recursively call on parent
-        #else:
-        #recursively call on child
-        return
+        #print "called pruneTree"
+        #print self.getLeafValue()
+        if self.getLeafValue() != None and self.feature != None:
+            parent = self.getParent()
+            cond_ent = conditionalEntropy(self.parent_examples, self.feature, self.categories)
+            ent = entropy(self.parent_examples, self.categories)
+            info_gain = ent - cond_ent
+            if info_gain < 0.01:
+                self.pruneNode()
+                parent.pruneTree()
+        else:
+            for child in self.getChildren():
+                child.pruneTree()
+
 
     #test example is feature dict
     #returns categorization for test_example
@@ -204,7 +234,6 @@ class DecisionTreeNode:
             descendant_count += child.countNodes()
 
         return descendant_count + 1
-
 
 def titanic_test():
     examples = [({"sex":"female", "class":"lower"}, "died"), 
@@ -259,8 +288,15 @@ def spambase_test():
 
     tree = DecisionTreeNode(examples, features, categories)
     tree.decisionTreeLearn()
-
+    print "NUMBER OF NODES: "
     print tree.countNodes()
+    tree.pruneTree()
+    print "NUMBER OF NODES AFTER PRUNING: "
+    print tree.countNodes()
+    
+    #tree.printTree()
+
+    
     #tree classified as spam, and was right
     spam_right = 0.0
     #and so on
