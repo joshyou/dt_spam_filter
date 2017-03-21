@@ -1,9 +1,11 @@
 import math
 import process
+import time
+import random
+import sys
 
-#examples is a list of tuples: (feature dictionary, category)
-#I'll call it "category" because "class" is a python keyword and "value" is ambiguous
-#features is list of tuples: (name, [feature values])
+global error_threshold
+global k 
 
 #return most common category among given examples
 def pluralityCategory(examples):
@@ -84,6 +86,11 @@ def conditionalEntropy(examples, feature, categories):
         return outer_sum
     return -outer_sum
 
+def infoGain(examples, feature, categories):
+    cond_ent = conditionalEntropy(examples, feature, categories)
+    ent = entropy(examples, categories)
+    return ent - cond_ent
+
 #returns feature where the conditional entropy of category given feature is smallest
 def leastConditionalEntropy(examples, features, categories):
     smallest_entropy = 1e300
@@ -96,8 +103,15 @@ def leastConditionalEntropy(examples, features, categories):
             smallest_entropy = entropy
     return least
 
-class DecisionTreeNode:
 
+
+class DecisionTreeNode:
+    """
+    Represents a decision tree node with given examples, feature list, and category list
+    Examples represent by a list of tuples: (feature dictionary, category)
+    I call it "category" because "class" is a python keyword
+    Features is list of tuples: (feature_name, [possible feature values])
+    """
     def __init__(self, examples, features, categories, feature = None, feature_value = None, parentNode = None, parent_examples = None):
         self.parentNode = parentNode
         self.examples = examples
@@ -142,13 +156,36 @@ class DecisionTreeNode:
     def getExamples(self):
         return self.examples
 
+    #computes error estimate at at this node
+    #using z = 0.69, suggested by http://www.saedsayad.com/decision_tree_overfitting.htm
+    def errorEstimate(self):
+        N = len(self.examples)
+        if N == 0:
+            return 0
+        error = 0.0
+
+        #uses leaf value if this node is a leaf, otherwise uses plurality category
+        if self.leafValue != None:
+            assigned_category = self.leafValue
+        else:
+            assigned_category = pluralityCategory(self.examples)
+        for example in self.examples:
+            if example[1] != assigned_category:
+                error += 1
+        error_rate = error / N
+        z = 0.69
+        numerator = (error_rate + (z*z)/(2*N) + z*math.pow(error_rate/N - (error_rate*error_rate)/N + (z*z)/(4*N*N), 0.5))
+        denominator = 1 + (z*z)/N
+        return numerator / denominator
+
+
     #recursively splits up the data based on the feature with the most information gain
     def decisionTreeLearn(self):
+        #base cases for terminating recursion
         if len(self.examples) == 0:
             self.setLeafValue(pluralityCategory(self.parent_examples))
             return self.leafValue
         elif soleCategory(self.examples):
-            #print "in soleCategory!"
             self.setLeafValue(soleCategory(self.examples))
             return self.leafValue
         elif len(self.features) == 0:
@@ -159,17 +196,13 @@ class DecisionTreeNode:
             cond_ent = conditionalEntropy(self.examples, to_split, self.categories)
             ent = entropy(self.examples, self.categories)
             info_gain = ent - cond_ent
-            #print info_gain
 
             #create copy of features without the split feature
             new_features = list(self.features)
             new_features.remove(to_split)
             feature_name = to_split[0]
             #create new tree and recursively call for each value of the split feature
-            #print "values in split feature:"
-            #print to_split[1]
             for value in to_split[1]:
-                #print value
                 value_examples = []
                 for example in self.examples:
                     if example[0][feature_name] == value:
@@ -179,14 +212,9 @@ class DecisionTreeNode:
                 self.addChild(new_node)
 
 
-    #if leaf:
-    #measure info gain from splitting at parent
-    #prune if below threshold, recursively call on parent
-    #else:
-    #recursively call on child
-    def pruneTree(self):
-        #print "called pruneTree"
-        #print self.getLeafValue()
+    #prunes tree from bottom-up based on info gain from splitting at parent
+    #I ended up using other pruning method
+    def pruneTreeInfoGain(self):
         if self.getLeafValue() != None and self.feature != None:
             parent = self.getParent()
             cond_ent = conditionalEntropy(self.parent_examples, self.feature, self.categories)
@@ -194,10 +222,59 @@ class DecisionTreeNode:
             info_gain = ent - cond_ent
             if info_gain < 0.01:
                 self.pruneNode()
-                parent.pruneTree()
+                parent.pruneTreeInfoGain()
+                return True
         else:
             for child in self.getChildren():
-                child.pruneTree()
+                #if one child is pruned, they're all pruned
+                pruned = child.pruneTreeInfoGain()
+                if pruned:
+                    return
+
+    #Recurses downward until it finds nodes where all children are leaves
+    def pruneTreeDownError(self):
+        if len(self.childNodes) == 0:
+            return
+        all_leaves = True
+        for child in self.childNodes:
+            if child.getLeafValue() == None:
+                all_leaves = False
+        if all_leaves:
+            self.pruneTreeUpError()
+        else:
+            for child in self.childNodes:
+                child.pruneTreeDownError()
+
+    #Recursively prunes node based on comparing error estimate with error estimate
+    #of child nodes
+    def pruneTreeUpError(self):
+        #don't prune leaves
+        if len(self.childNodes) == 0:
+            return
+
+        #call this on nodes where all children are leaf nodes
+        all_leaves = True
+        for child in self.childNodes:
+            if child.getLeafValue() == None:
+                all_leaves = False
+
+        if all_leaves:
+            parent = self.getParent()
+            error = self.errorEstimate()
+            children_error = 0.0
+            weight_sum = 0.0
+            for child in self.childNodes:
+                child_error = child.errorEstimate()
+                weight = 1.0*len(child.getExamples())/len(self.examples)
+                weight_sum += weight
+                children_error += (child_error * weight)
+            global error_threshold
+            if children_error >= error + error_threshold:
+                self.removeChildren()
+                self.setLeafValue(pluralityCategory(self.examples))
+                #recursively call on parents
+                if parent != None:
+                    parent.pruneTreeUpError()
 
 
     #test example is feature dict
@@ -235,67 +312,36 @@ class DecisionTreeNode:
 
         return descendant_count + 1
 
-def titanic_test():
-    examples = [({"sex":"female", "class":"lower"}, "died"), 
-    ({"sex":"female", "class":"lower"}, "survived"),
-    ({"sex":"female", "class":"lower"}, "died"),
-    ({"sex":"female", "class":"lower"}, "survived"),
-    ({"sex":"female", "class":"lower"}, "survived"),
-    ({"sex":"female", "class":"lower"}, "survived"),
-    ({"sex":"female", "class":"first"}, "died"), 
-    ({"sex":"female", "class":"first"}, "survived"), 
-    ({"sex":"female", "class":"first"}, "survived"), 
-    ({"sex":"female", "class":"first"}, "survived"), 
-    ({"sex":"female", "class":"first"}, "survived"), 
-    ({"sex":"male", "class":"first"}, "survived"),
-    ({"sex":"male", "class":"first"}, "survived"),
-    ({"sex":"male", "class":"first"}, "survived"),
-    ({"sex":"male", "class":"first"}, "died"),
-    ({"sex":"male", "class":"first"}, "died"),
-    ({"sex":"male", "class":"lower"}, "died"),
-    ({"sex":"male", "class":"lower"}, "died"),
-    ({"sex":"male", "class":"lower"}, "survived"),
-    ({"sex":"male", "class":"lower"}, "died")]
-    #print pluralityCategory(examples)
-    #print soleCategory(examples)
-    categories = ["died", "survived"]
-    features = [("sex", ["male", "female"]), ("class", ["first", "lower"])]
-
-
-    print conditionalEntropy(examples, ("sex", ["male", "female"]), ["died", "survived"])
-    print conditionalEntropy(examples, ("class", ["first", "lower"]), ["died", "survived"])  
-    print entropy(examples, ["died", "survived"])
-    print leastConditionalEntropy(examples, features, categories)
-
-    test_tree = DecisionTreeNode(examples, features, categories)
-    test_tree.decisionTreeLearn()
-    #print test_tree.traverseTree({"sex":"female", "class":"lower"})
-    #test_tree.printTree()
-
-def spambase_test():
-    examples = process.spambase_process("training.txt")
+def spambase_test(arg_k, arg_error_threshold):
+    #number of bins
+    global k 
+    k = arg_k
+    global error_threshold
+    error_threshold = arg_error_threshold
+    examples = process.spambase_process_bins("training.txt", k)
     categories = [0,1]
     features = []
+    feature_values = []
 
-    for i in range(48):
-        features.append((i, [0,1,2,3,4,5]))
-
-    for i in range(48, 55):
-        features.append((i, [0,1,2,3,4,5,6]))
-
-    features.append((55, [0,1,2,3]))
-    features.append((56, [0,1,2,3]))
-
+    for i in range(k):
+        feature_values.append(i)
+    
+    for i in range(57):
+        features.append((i, feature_values))
+    
     tree = DecisionTreeNode(examples, features, categories)
     tree.decisionTreeLearn()
+    print "NUMBER OF BINS:"
+    print k
     print "NUMBER OF NODES: "
     print tree.countNodes()
-    tree.pruneTree()
+    time1 = time.time()
+    tree.pruneTreeDownError()
     print "NUMBER OF NODES AFTER PRUNING: "
     print tree.countNodes()
-    
-    #tree.printTree()
-
+    time2 = time.time()
+    print "TIME TO PRUNE: "
+    print str(time2 - time1)
     
     #tree classified as spam, and was right
     spam_right = 0.0
@@ -337,7 +383,7 @@ def spambase_test():
     ham_right = 0.0
     ham_wrong = 0.0
 
-    heldout_examples = process.spambase_process("heldout.txt")
+    heldout_examples = process.spambase_process_infogain("heldout.txt")
     for example in heldout_examples:
         actual = example[1]
         from_tree = tree.traverseTree(example[0])
@@ -363,17 +409,39 @@ def spambase_test():
     print "ham accuracy:: " + str(ham_right / (spam_wrong + ham_right))
     print "false positive: " + str(spam_wrong / (ham_right + spam_wrong))
     print "false negative: " + str(ham_wrong / (ham_wrong + spam_right))
+    print "\n"
+
+    test_examples = process.spambase_process_infogain("test.txt")
+    for example in test_examples:
+        actual = example[1]
+        from_tree = tree.traverseTree(example[0])
+
+        if from_tree == 0:
+            if actual == 0:
+                ham_right += 1
+            else:
+                ham_wrong += 1
+        else:
+            if actual == 1:
+                spam_right += 1
+            else:
+                spam_wrong += 1
+    
+    print "TEST RESULTS:"
+    print "spam_right: " + str(spam_right)
+    print "spam_wrong: " + str(spam_wrong)
+    print "ham_right: " + str(ham_right)
+    print "ham_wrong: " + str(ham_wrong)
+    print "total accuracy: " + str((spam_right + ham_right) / (spam_right + spam_wrong + ham_right + ham_wrong))
+    print "spam accuracy: " + str(spam_right / (spam_right + ham_wrong))
+    print "ham accuracy:: " + str(ham_right / (spam_wrong + ham_right))
+    print "false positive: " + str(spam_wrong / (ham_right + spam_wrong))
+    print "false negative: " + str(ham_wrong / (ham_wrong + spam_right))
 
     
 def main():
-    spambase_test()
+    spambase_test(int(sys.argv[1]), float(sys.argv[2]))
 
 
 if __name__ == "__main__":
     main()
-
-"""
-TO DO:
-pruning / info gain threshold
-
-handling sparse feature vectors (don't store every value)"""
